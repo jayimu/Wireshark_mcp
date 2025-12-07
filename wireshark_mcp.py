@@ -71,7 +71,7 @@ class WiresharkMCP:
         self.tshark_path = tshark_path.strip()
         self._verify_tshark()
         self.running = True
-
+        
     def _validate_file_path(self, file_path: str) -> None:
         """验证文件路径的安全性和有效性"""
         if not isinstance(file_path, str) or not file_path.strip():
@@ -120,7 +120,7 @@ class WiresharkMCP:
             logger.warning(f"过滤器表达式包含可能危险的字符: {filter_expr}")
 
         return filter_expr
-
+        
     def _verify_tshark(self):
         """验证 tshark 是否可用"""
         try:
@@ -330,9 +330,9 @@ class WiresharkMCP:
         cmd = [self.tshark_path, "-D"]
         try:
             proc = subprocess.run(cmd,
-                                  capture_output=True,
-                                  text=True,
-                                  check=True)
+                                capture_output=True,
+                                text=True,
+                                check=True)
             interfaces = []
             for line in proc.stdout.splitlines():
                 if line.strip():
@@ -385,7 +385,7 @@ class WiresharkMCP:
                     "message": str(e)
                 }
             }, ensure_ascii=False, indent=2)
-
+            
         cmd = [
             self.tshark_path,
             "-r", file_path,
@@ -394,7 +394,7 @@ class WiresharkMCP:
         ]
         if filter:
             cmd.extend(["-Y", filter])
-
+            
         return self._run_tshark_command(cmd, max_packets)
 
     def get_protocols(self) -> List[str]:
@@ -468,7 +468,7 @@ class WiresharkMCP:
         ]
         if filter:
             cmd.extend(["-Y", filter])
-
+            
         try:
             proc = subprocess.run(cmd,
                                   capture_output=True,
@@ -695,7 +695,7 @@ class WiresharkMCP:
                     "message": str(e)
                 }
             }, ensure_ascii=False, indent=2)
-
+            
         cmd = [
             self.tshark_path,
             "-r", file_path,
@@ -796,7 +796,7 @@ class WiresharkMCP:
         if protocol:
             # 直接使用协议名称作为过滤器
             cmd.extend(["-Y", protocol.lower()])
-
+            
         # 统一交给 _run_tshark_command 处理输出和结构化
         return self._run_tshark_command(cmd, max_packets)
 
@@ -851,20 +851,45 @@ class WiresharkMCP:
         """停止服务器"""
         self.running = False
 
-def create_mcp_server(wireshark: WiresharkMCP) -> FastMCP:
+def create_mcp_server(wireshark: WiresharkMCP, host: str = "127.0.0.1", port: int = 3000) -> FastMCP:
     """创建 MCP 服务器实例"""
+    global mcp_initialized, initialization_error
+    
+    # 重置初始化状态
+    mcp_initialized = False
+    initialization_error = None
+    
     mcp = FastMCP(
-        "Wireshark MCP",
-        server_url="http://127.0.0.1:3000"
+        name="Wireshark MCP",
+        instructions="A Model Context Protocol server for Wireshark/tshark integration that provides network packet analysis capabilities.",
+        host=host,
+        port=port
     )
     
     # 存储服务器实例
     create_mcp_server.instance = mcp
     create_mcp_server.wireshark = wireshark
     
+    # 标记初始化完成
+    def mark_initialized():
+        global mcp_initialized
+        mcp_initialized = True
+        logger.info("MCP 服务器初始化完成")
+    
+    # 标记初始化错误
+    def mark_error(error: str):
+        global initialization_error
+        initialization_error = error
+        logger.error(f"MCP 服务器初始化失败: {error}")
+    
+    create_mcp_server.mark_initialized = mark_initialized
+    create_mcp_server.mark_error = mark_error
+    
     @mcp.tool()
     def list_interfaces() -> List[Dict[str, str]]:
         """列出所有可用的网络接口"""
+        if not mcp_initialized:
+            raise RuntimeError("MCP 服务器尚未完成初始化，请稍候再试")
         return wireshark.list_interfaces()
             
     @mcp.tool()
@@ -873,6 +898,8 @@ def create_mcp_server(wireshark: WiresharkMCP) -> FastMCP:
                     filter: str = "",
                     max_packets: int = 100) -> str:
         """实时抓包分析"""
+        if not mcp_initialized:
+            raise RuntimeError("MCP 服务器尚未完成初始化，请稍候再试")
         return wireshark.capture_live(interface, duration, filter, max_packets)
             
     @mcp.tool()
@@ -880,17 +907,23 @@ def create_mcp_server(wireshark: WiresharkMCP) -> FastMCP:
                     filter: str = "",
                     max_packets: int = 100) -> str:
         """分析 pcap 文件"""
+        if not mcp_initialized:
+            raise RuntimeError("MCP 服务器尚未完成初始化，请稍候再试")
         return wireshark.analyze_pcap(file_path, filter, max_packets)
 
     @mcp.tool()
     def get_protocols() -> List[str]:
         """获取支持的协议列表"""
+        if not mcp_initialized:
+            raise RuntimeError("MCP 服务器尚未完成初始化，请稍候再试")
         return wireshark.get_protocols()
 
     @mcp.tool()
     def get_packet_statistics(file_path: str,
                             filter: str = "") -> str:
         """获取数据包统计信息"""
+        if not mcp_initialized:
+            raise RuntimeError("MCP 服务器尚未完成初始化，请稍候再试")
         return wireshark.get_packet_statistics(file_path, filter)
 
     @mcp.tool()
@@ -899,6 +932,8 @@ def create_mcp_server(wireshark: WiresharkMCP) -> FastMCP:
                       filter: str = "",
                       max_packets: int = 5000) -> str:
         """提取特定字段信息"""
+        if not mcp_initialized:
+            raise RuntimeError("MCP 服务器尚未完成初始化，请稍候再试")
         return wireshark.extract_fields(file_path, fields, filter, max_packets)
 
     @mcp.tool()
@@ -906,6 +941,8 @@ def create_mcp_server(wireshark: WiresharkMCP) -> FastMCP:
                         protocol: str = "",
                         max_packets: int = 100) -> str:
         """分析特定协议的数据包"""
+        if not mcp_initialized:
+            raise RuntimeError("MCP 服务器尚未完成初始化，请稍候再试")
         return wireshark.analyze_protocols(file_path, protocol, max_packets)
         
     @mcp.tool()
@@ -913,6 +950,8 @@ def create_mcp_server(wireshark: WiresharkMCP) -> FastMCP:
                       error_type: str = "all",
                       max_packets: int = 5000) -> str:
         """分析数据包中的错误"""
+        if not mcp_initialized:
+            raise RuntimeError("MCP 服务器尚未完成初始化，请稍候再试")
         return wireshark.analyze_errors(file_path, error_type, max_packets)
 
     @mcp.tool()
@@ -926,6 +965,8 @@ def create_mcp_server(wireshark: WiresharkMCP) -> FastMCP:
             interval: 统计时间间隔（秒）
             filter: 显示过滤器表达式
         """
+        if not mcp_initialized:
+            raise RuntimeError("MCP 服务器尚未完成初始化，请稍候再试")
         return wireshark.io_stat(file_path, interval, filter)
 
     @mcp.tool()
@@ -939,12 +980,17 @@ def create_mcp_server(wireshark: WiresharkMCP) -> FastMCP:
             conv_type: 会话类型，例如 "ip", "tcp", "udp", "eth"
             filter: 显示过滤器表达式
         """
+        if not mcp_initialized:
+            raise RuntimeError("MCP 服务器尚未完成初始化，请稍候再试")
         return wireshark.conversation_stats(file_path, conv_type, filter)
     
     return mcp
 
-# 全局变量存储服务器实例
+# 全局变量存储服务器实例和初始化状态
 server_instance = None
+mcp_initialized = False
+initialization_error = None
+_exit_requested = False  # 用于处理双重 Ctrl+C 强制退出
 
 def cleanup():
     """清理资源"""
@@ -957,22 +1003,190 @@ def cleanup():
 
 def handle_exit(signum, frame):
     """处理退出信号"""
-    global server_instance
+    global server_instance, _exit_requested
+    
+    # 如果已经收到过一次退出信号，强制退出
+    if _exit_requested:
+        logger.warning("收到第二次退出信号，强制退出...")
+        os._exit(1)
+    
+    _exit_requested = True
+    logger.info("正在关闭服务器...")
     
     try:
-        logger.info("正在关闭服务器...")
-        cleanup()
-        
-        # 如果服务器实例存在，尝试停止它
+        # 如果服务器实例存在，设置退出标志让 uvicorn 优雅关闭
         if server_instance:
             server_instance.should_exit = True
+        
+        # 清理资源
+        cleanup()
     except Exception as e:
-        # 仅在调试级别记录退出错误
         logger.debug(f"退出时发生错误: {e}")
-    # 让 uvicorn 自己优雅退出，不强制 os._exit
+    
+    # uvicorn 会在 should_exit=True 时自动关闭
+    # 如果服务器没有及时关闭，KeyboardInterrupt 处理会处理它
+
+async def status_endpoint(request: Request):
+    """状态端点，返回服务器初始化状态（支持 JSON 和 HTML）"""
+    global mcp_initialized, initialization_error
+    
+    status_info = {
+        "status": "initialized" if mcp_initialized else "initializing",
+        "initialized": mcp_initialized,
+        "timestamp": datetime.now().isoformat(),
+        "error": initialization_error
+    }
+    
+    if mcp_initialized:
+        status_info["message"] = "MCP 服务器已就绪，可以正常使用工具"
+    else:
+        status_info["message"] = "MCP 服务器正在初始化，请稍候..."
+        if initialization_error:
+            status_info["message"] = f"初始化失败: {initialization_error}"
+    
+    # 检查 Accept 头，如果请求 HTML 则返回 HTML 页面
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept or request.url.path.endswith(".html"):
+        return homepage(request)
+    
+    # 默认返回 JSON
+    return JSONResponse(status_info)
 
 def homepage(request: Request) -> HTMLResponse:
     """根路由处理器"""
+    global mcp_initialized, initialization_error
+    
+    # 根据初始化状态显示不同的状态信息（去掉 HTML 中的圆点，使用 CSS ::before）
+    if mcp_initialized:
+        status_html = """
+            <div class="status status-success">
+                <strong>服务器运行正常 - MCP 已初始化完成</strong>
+            </div>
+        """
+    elif initialization_error:
+        status_html = f"""
+            <div class="status status-error">
+                <strong>初始化失败: {initialization_error}</strong>
+            </div>
+        """
+    else:
+        status_html = """
+            <div class="status status-warning">
+                <strong>服务器正在初始化，请稍候...</strong>
+            </div>
+        """
+    
+    # 获取工具列表
+    tools_html = ""
+    tools_list = []
+    
+    try:
+        if hasattr(create_mcp_server, 'instance') and create_mcp_server.instance:
+            mcp = create_mcp_server.instance
+            # 尝试从 FastMCP 获取工具列表
+            try:
+                # 方法1: 直接从 FastMCP 实例获取
+                if hasattr(mcp, '_tools'):
+                    tools_list = list(mcp._tools.values())
+                # 方法2: 从 _mcp_server 获取
+                elif hasattr(mcp, '_mcp_server') and hasattr(mcp._mcp_server, '_tools'):
+                    tools_list = list(mcp._mcp_server._tools.values())
+                # 方法3: 尝试调用 list_tools 方法
+                elif hasattr(mcp, 'list_tools'):
+                    result = mcp.list_tools()
+                    if hasattr(result, 'tools'):
+                        tools_list = result.tools
+                    elif isinstance(result, list):
+                        tools_list = result
+            except Exception as e:
+                logger.debug(f"从 MCP 实例获取工具失败: {e}")
+    except Exception as e:
+        logger.debug(f"获取工具列表失败: {e}")
+    
+    # 如果成功获取到工具列表，生成 HTML
+    if tools_list:
+        for idx, tool in enumerate(tools_list):
+            # 获取工具名称
+            tool_name = tool.name if hasattr(tool, 'name') else str(tool)
+            
+            # 获取工具描述
+            description = ""
+            if hasattr(tool, 'description') and tool.description:
+                description = tool.description
+            elif hasattr(tool, '__doc__') and tool.__doc__:
+                description = tool.__doc__.strip().split('\n')[0]
+            else:
+                description = "无描述"
+            
+            # 格式化参数信息
+            params_info = []
+            input_schema = None
+            if hasattr(tool, 'inputSchema'):
+                input_schema = tool.inputSchema
+            elif hasattr(tool, 'input_schema'):
+                input_schema = tool.input_schema
+            
+            if input_schema:
+                if isinstance(input_schema, dict) and 'properties' in input_schema:
+                    for param_name, param_info_dict in input_schema['properties'].items():
+                        param_type = param_info_dict.get('type', 'unknown')
+                        param_desc = param_info_dict.get('description', '')
+                        if param_desc:
+                            params_info.append(f"{param_name} ({param_type}): {param_desc}")
+                        else:
+                            params_info.append(f"{param_name} ({param_type})")
+            
+            # 生成折叠的详情 HTML
+            details_html = ""
+            if description or params_info:
+                details_html = f"""
+                    <div class="tool-details" id="tool-details-{idx}" style="display: none;">
+                        <p class="tool-description">{description}</p>
+                        <div class="params">
+                            {'参数: ' + ', '.join(params_info) if params_info else '无参数'}
+                        </div>
+                    </div>
+                """
+            
+            tools_html += f"""
+                <div class="tool">
+                    <div class="tool-header" onclick="toggleTool({idx})">
+                        <h3>{tool_name}</h3>
+                        <span class="toggle-icon" id="toggle-icon-{idx}">▼</span>
+                    </div>
+                    {details_html}
+                </div>
+            """
+    
+    # 如果获取失败或没有工具，使用默认列表（也使用折叠格式）
+    if not tools_html:
+        default_tools = [
+            ("list_interfaces", "列出所有可用的网络接口", "返回类型: List[Dict[str, str]]"),
+            ("capture_live", "实时抓包分析", "参数: interface, duration, filter, max_packets"),
+            ("analyze_pcap", "分析 pcap 文件内容", "参数: file_path, filter, max_packets"),
+            ("get_protocols", "获取支持的协议列表", "返回类型: List[str]"),
+            ("get_packet_statistics", "获取数据包统计信息", "参数: file_path, filter"),
+            ("extract_fields", "提取数据包中的特定字段", "参数: file_path, fields, filter, max_packets"),
+            ("analyze_protocols", "分析特定协议的数据包", "参数: file_path, protocol, max_packets"),
+            ("analyze_errors", "分析数据包中的错误", "参数: file_path, error_type, max_packets"),
+            ("io_stat", "基于 tshark -z io,stat 的 I/O 统计工具", "参数: file_path, interval, filter"),
+            ("conversation_stats", "基于 tshark -z conv,XXX 的会话统计工具", "参数: file_path, conv_type, filter")
+        ]
+        
+        for idx, (tool_name, description, params) in enumerate(default_tools, start=100):
+            tools_html += f"""
+                <div class="tool">
+                    <div class="tool-header" onclick="toggleTool({idx})">
+                        <h3>{tool_name}</h3>
+                        <span class="toggle-icon" id="toggle-icon-{idx}">▼</span>
+                    </div>
+                    <div class="tool-details" id="tool-details-{idx}" style="display: none;">
+                        <p class="tool-description">{description}</p>
+                        <div class="params">{params}</div>
+                    </div>
+                </div>
+            """
+    
     html_content = """
     <!DOCTYPE html>
     <html>
@@ -1020,10 +1234,8 @@ def homepage(request: Request) -> HTMLResponse:
             
             .status {
                 padding: 20px;
-                background: #e8f5e9;
                 border-radius: 8px;
                 margin: 20px 0;
-                color: var(--success-color);
                 display: flex;
                 align-items: center;
                 gap: 10px;
@@ -1031,8 +1243,35 @@ def homepage(request: Request) -> HTMLResponse:
             
             .status::before {
                 content: "●";
-                color: var(--success-color);
                 font-size: 1.5em;
+                margin-right: 10px;
+            }
+            
+            .status-success {
+                background: #e8f5e9;
+                color: #2e7d32;
+            }
+            
+            .status-success::before {
+                color: #2e7d32;
+            }
+            
+            .status-warning {
+                background: #fff3e0;
+                color: #e65100;
+            }
+            
+            .status-warning::before {
+                color: #e65100;
+            }
+            
+            .status-error {
+                background: #ffebee;
+                color: #c62828;
+            }
+            
+            .status-error::before {
+                color: #c62828;
             }
             
             .tools-grid {
@@ -1043,26 +1282,54 @@ def homepage(request: Request) -> HTMLResponse:
             }
             
             .tool { 
-                padding: 20px;
                 background: white;
                 border: 1px solid var(--border-color);
                 border-radius: 8px;
                 transition: all 0.3s ease;
+                margin-bottom: 10px;
             }
             
             .tool:hover {
-                transform: translateY(-2px);
                 box-shadow: 0 4px 12px rgba(0,0,0,0.1);
             }
             
-            .tool h3 { 
-                margin: 0 0 10px 0;
+            .tool-header {
+                padding: 15px 20px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                cursor: pointer;
+                user-select: none;
+            }
+            
+            .tool-header:hover {
+                background: #f5f5f5;
+            }
+            
+            .tool-header h3 { 
+                margin: 0;
                 color: var(--primary-color);
                 font-size: 1.2em;
             }
             
-            .tool p {
-                margin: 0;
+            .toggle-icon {
+                color: var(--primary-color);
+                font-size: 0.9em;
+                transition: transform 0.3s ease;
+            }
+            
+            .tool-header.active .toggle-icon {
+                transform: rotate(180deg);
+            }
+            
+            .tool-details {
+                padding: 0 20px 15px 20px;
+                border-top: 1px solid #f0f0f0;
+                margin-top: 0;
+            }
+            
+            .tool-description {
+                margin: 15px 0 10px 0;
                 color: #666;
                 font-size: 0.95em;
             }
@@ -1122,59 +1389,53 @@ def homepage(request: Request) -> HTMLResponse:
                 <h1>Wireshark MCP 服务器</h1>
             </div>
             
-            <div class="status">
-                服务器运行正常
-            </div>
+            """ + status_html + """
+            
+            <div style="margin-top: 20px; padding: 15px; background: #f5f5f5; border-radius: 8px;">
+                <h3 style="margin-top: 0;">初始化状态</h3>
+                <p><strong>状态:</strong> <span id="init-status">""" + ('已初始化' if mcp_initialized else '初始化中...') + """</span></p>
+                <p><strong>时间戳:</strong> <span id="timestamp">""" + datetime.now().isoformat() + """</span></p>
+                <button onclick="checkStatus()" style="padding: 8px 16px; background: #1976d2; color: white; border: none; border-radius: 4px; cursor: pointer;">刷新状态</button>
+                </div>
+                
+            <script>
+                async function checkStatus() {
+                    try {
+                        const response = await fetch('/status');
+                        const data = await response.json();
+                        document.getElementById('init-status').textContent = data.initialized ? '已初始化' : '初始化中...';
+                        document.getElementById('timestamp').textContent = data.timestamp;
+                        if (data.error) {
+                            alert('初始化错误: ' + data.error);
+                        }
+                    } catch (error) {
+                        console.error('获取状态失败:', error);
+                    }
+                }
+                // 每 2 秒自动刷新状态
+                setInterval(checkStatus, 2000);
+                
+                // 工具折叠功能
+                function toggleTool(index) {
+                    const details = document.getElementById('tool-details-' + index);
+                    const icon = document.getElementById('toggle-icon-' + index);
+                    const header = icon.parentElement;
+                    
+                    if (details.style.display === 'none') {
+                        details.style.display = 'block';
+                        icon.textContent = '▲';
+                        header.classList.add('active');
+                    } else {
+                        details.style.display = 'none';
+                        icon.textContent = '▼';
+                        header.classList.remove('active');
+                    }
+                }
+            </script>
             
             <h2>可用工具</h2>
             <div class="tools-grid">
-                <div class="tool">
-                    <h3>list_interfaces</h3>
-                    <p>列出所有可用的网络接口</p>
-                    <div class="params">返回类型: List[Dict[str, str]]</div>
-                </div>
-                
-                <div class="tool">
-                    <h3>capture_live</h3>
-                    <p>实时抓包分析</p>
-                    <div class="params">参数: interface, duration, filter, max_packets</div>
-                </div>
-                
-                <div class="tool">
-                    <h3>analyze_pcap</h3>
-                    <p>分析 pcap 文件内容</p>
-                    <div class="params">参数: file_path, filter, max_packets</div>
-                </div>
-                
-                <div class="tool">
-                    <h3>get_protocols</h3>
-                    <p>获取支持的协议列表</p>
-                    <div class="params">返回类型: List[str]</div>
-                </div>
-                
-                <div class="tool">
-                    <h3>get_packet_statistics</h3>
-                    <p>获取数据包统计信息</p>
-                    <div class="params">参数: file_path, filter</div>
-                </div>
-                
-                <div class="tool">
-                    <h3>extract_fields</h3>
-                    <p>提取数据包中的特定字段</p>
-                    <div class="params">参数: file_path, fields, filter, max_packets</div>
-                </div>
-                
-                <div class="tool">
-                    <h3>analyze_protocols</h3>
-                    <p>分析特定协议的数据包</p>
-                    <div class="params">参数: file_path, protocol, max_packets</div>
-                </div>
-                
-                <div class="tool">
-                    <h3>analyze_errors</h3>
-                    <p>分析数据包中的错误</p>
-                    <div class="params">参数: file_path, error_type, max_packets</div>
-                </div>
+            """ + tools_html + """
             </div>
             
             <div class="info-section">
@@ -1220,7 +1481,10 @@ def get_system_info() -> Dict[str, str]:
     info = {
         "python_version": platform.python_version(),
         "os_platform": platform.platform(),
-        "tshark_version": "未知"
+        "tshark_version": "未知",
+        "fastmcp_version": "未知",
+        "mcp_version": "未知",
+        "fastmcp_path": "未知"
     }
     
     try:
@@ -1232,11 +1496,68 @@ def get_system_info() -> Dict[str, str]:
         info["tshark_version"] = proc.stdout.split("\n")[0].strip()
     except Exception:
         pass
+    
+    try:
+        # 获取 FastMCP 版本和路径
+        import importlib.metadata
+        import os
+        
+        # 尝试从包元数据获取 FastMCP 版本
+        try:
+            info["fastmcp_version"] = importlib.metadata.version("fastmcp")
+        except Exception:
+            # 如果失败，尝试从模块获取
+            try:
+                import mcp.server.fastmcp
+                if hasattr(mcp.server.fastmcp, '__version__'):
+                    info["fastmcp_version"] = mcp.server.fastmcp.__version__
+            except Exception:
+                pass
+        
+        # 获取 FastMCP 路径
+        try:
+            import mcp.server.fastmcp
+            if hasattr(mcp.server.fastmcp, '__file__'):
+                # FastMCP 路径通常是 site-packages 目录
+                fastmcp_file = mcp.server.fastmcp.__file__
+                # 获取 site-packages 目录（通常是父目录的父目录）
+                fastmcp_path = os.path.dirname(os.path.dirname(os.path.dirname(fastmcp_file)))
+                info["fastmcp_path"] = fastmcp_path
+        except Exception:
+            # 如果无法获取，尝试从 importlib.metadata 获取
+            try:
+                dist = importlib.metadata.distribution("fastmcp")
+                if dist and dist.locate_file:
+                    info["fastmcp_path"] = str(dist.locate_file(""))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    
+    try:
+        # 获取 MCP 版本
+        import importlib.metadata
+        try:
+            info["mcp_version"] = importlib.metadata.version("mcp")
+        except Exception:
+            # 如果失败，尝试从模块获取
+            try:
+                import mcp
+                if hasattr(mcp, '__version__'):
+                    info["mcp_version"] = mcp.__version__
+            except Exception:
+                pass
+    except Exception:
+        pass
         
     return info
 
 def print_banner(system_info: Dict[str, str]):
     """打印启动横幅"""
+    # 格式化版本信息，确保对齐
+    fastmcp_version = system_info.get('fastmcp_version', '未知')
+    mcp_version = system_info.get('mcp_version', '未知')
+    
     banner = f"""
 ╔══════════════════════════════════════════════════════════════════╗
 ║                    Wireshark MCP 服务器启动                      ║
@@ -1245,6 +1566,10 @@ def print_banner(system_info: Dict[str, str]):
 ║ • Python: {system_info['python_version']}                        
 ║ • 操作系统: {system_info['os_platform']}                        
 ║ • TShark: {system_info['tshark_version']}                       
+╠══════════════════════════════════════════════════════════════════╣
+║ 依赖版本:                                                        ║
+║ • FastMCP version: {fastmcp_version:<50}                         
+║ • MCP version: {mcp_version:<50}                                 
 ╚══════════════════════════════════════════════════════════════════╝
 """
     print(banner)
@@ -1275,7 +1600,7 @@ def main():
     
     try:
         wireshark = WiresharkMCP(args.tshark_path)
-        mcp = create_mcp_server(wireshark)
+        mcp = create_mcp_server(wireshark, host=args.host, port=args.port)
         
         # 配置中间件
         middleware = [
@@ -1286,19 +1611,43 @@ def main():
         ]
         
         # 创建 Starlette 应用并配置路由
+        # FastMCP 的 sse_app() 返回一个完整的应用，包含 /sse 和 /messages/ 等路由
+        # 将状态和主页路由放在前面，SSE 应用放在最后作为默认处理
+        sse_app = mcp.sse_app()
         routes = [
-            Route("/status", homepage),
-            Mount("/", app=mcp.sse_app())
+            Route("/status", status_endpoint),
+            Route("/status.json", status_endpoint),  # JSON 版本
+            Route("/", homepage),  # 主页路由（优先匹配）
+            Mount("/", app=sse_app),  # SSE 应用处理所有其他路径（/sse, /messages/ 等）
         ]
+        
+        # 使用 lifespan 事件在应用启动后标记初始化完成
+        from contextlib import asynccontextmanager
+        
+        @asynccontextmanager
+        async def lifespan(app):
+            # 启动时：等待一小段时间确保服务器完全启动，然后标记初始化完成
+            import asyncio
+            await asyncio.sleep(0.5)  # 短暂延迟确保服务器就绪
+            if hasattr(create_mcp_server, 'mark_initialized'):
+                create_mcp_server.mark_initialized()
+                logger.info("MCP 服务器初始化完成")
+            yield
+            # 关闭时：清理资源
+            cleanup()
         
         app = Starlette(
             routes=routes,
-            middleware=middleware
+            middleware=middleware,
+            lifespan=lifespan
         )
         
-        logger.info(f"服务器地址: http://{args.host}:{args.port}")
+        logger.info(f"启动 Wireshark MCP 服务器")
+        logger.info(f"传输协议: sse")
+        logger.info(f"服务器地址: {args.host}:{args.port}")
         logger.info(f"状态页面: http://{args.host}:{args.port}/status")
-        logger.info(f"SSE 端点: http://{args.host}:{args.port}/")
+        logger.info(f"SSE 端点: http://{args.host}:{args.port}/sse")
+        logger.info(f"正在启动 SSE 服务器...")
         
         # 配置 uvicorn 服务器
         config = uvicorn.Config(
@@ -1308,7 +1657,17 @@ def main():
             log_level="info"
         )
         server_instance = uvicorn.Server(config)
-        server_instance.run()
+        
+        # 运行服务器（这会阻塞直到服务器停止）
+        try:
+            server_instance.run()
+        except KeyboardInterrupt:
+            # 处理键盘中断（Ctrl+C）
+            logger.info("收到键盘中断信号，正在关闭服务器...")
+        finally:
+            # 确保清理资源
+            cleanup()
+            logger.info("服务器已关闭")
         
     except Exception as e:
         logger.error(f"服务器启动失败: {e}")
