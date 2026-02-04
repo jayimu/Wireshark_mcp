@@ -58,68 +58,49 @@ ch.setFormatter(CustomFormatter())
 logger.addHandler(ch)
 
 class WiresharkMCP:
-    def __init__(self, tshark_path: str = "tshark"):
+    def __init__(self, tshark_path: str = "tshark", model_context_limit: int = 128000):
         """初始化 Wireshark MCP 服务器
-        
+
         Args:
             tshark_path: tshark 可执行文件的路径
+            model_context_limit: 大模型的上下文限制（tokens），用于自动调整数据包数量
         """
-        # 验证 tshark_path 参数
-        if not isinstance(tshark_path, str) or not tshark_path.strip():
-            raise ValueError("tshark_path 必须是非空字符串")
-
-        self.tshark_path = tshark_path.strip()
+        self.tshark_path = tshark_path.strip() if tshark_path else "tshark"
         self._verify_tshark()
         self.running = True
-        
+        self.model_context_limit = model_context_limit
+        # 根据模型上下文限制计算合理的数据包数量
+        # 假设每个数据包的JSON约占200 tokens，预留50%空间给其他内容
+        self.auto_max_packets = min(int(model_context_limit * 0.5 / 200), 10000)
+        logger.info(f"根据模型上下文限制 {model_context_limit} tokens，自动设置最大数据包数为 {self.auto_max_packets}")
+
     def _validate_file_path(self, file_path: str) -> None:
-        """验证文件路径的安全性和有效性"""
-        if not isinstance(file_path, str) or not file_path.strip():
+        """简化的文件路径验证（本地部署，无需安全检查）"""
+        if not file_path or not file_path.strip():
             raise ValueError("文件路径不能为空")
-
-        file_path = file_path.strip()
-
-        # 防止路径遍历攻击（允许绝对路径，但禁止 .. ）
-        if ".." in file_path:
-            raise ValueError("文件路径不能包含 '..' 序列")
-
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"找不到文件: {file_path}")
 
-        if not os.access(file_path, os.R_OK):
-            raise PermissionError(f"无法读取文件: {file_path}")
-
     def _validate_max_packets(self, max_packets: int) -> int:
-        """验证和标准化 max_packets 参数"""
-        if not isinstance(max_packets, int):
-            try:
-                max_packets = int(max_packets)
-            except (ValueError, TypeError):
-                raise ValueError("max_packets 必须是整数")
+        """简化的数据包数量验证，使用自动计算的限制"""
+        try:
+            max_packets = int(max_packets)
+        except (ValueError, TypeError):
+            max_packets = self.auto_max_packets
 
         if max_packets <= 0:
-            raise ValueError("max_packets 必须大于 0")
+            max_packets = self.auto_max_packets
 
-        # 防止过大的值导致系统问题
-        if max_packets > 50000:
-            logger.warning(f"max_packets 值 {max_packets} 过大，已限制为 50000")
-            max_packets = 50000
+        # 使用自动计算的限制
+        if max_packets > self.auto_max_packets:
+            logger.info(f"max_packets {max_packets} 超过自动限制，调整为 {self.auto_max_packets}")
+            max_packets = self.auto_max_packets
 
         return max_packets
 
     def _validate_filter_expression(self, filter_expr: str) -> str:
-        """验证过滤器表达式的基本安全性"""
-        if not isinstance(filter_expr, str):
-            raise ValueError("过滤器表达式必须是字符串")
-
-        filter_expr = filter_expr.strip()
-
-        # 基本的安全检查，防止命令注入（仅告警，不强制阻止）
-        dangerous_chars = [";", "&", "|", "`", "$", "()", "{}", ">"]
-        if any(char in filter_expr for char in dangerous_chars):
-            logger.warning(f"过滤器表达式包含可能危险的字符: {filter_expr}")
-
-        return filter_expr
+        """简化的过滤器验证（本地部署，无需安全检查）"""
+        return filter_expr.strip() if isinstance(filter_expr, str) else ""
         
     def _verify_tshark(self):
         """验证 tshark 是否可用"""
@@ -134,13 +115,15 @@ class WiresharkMCP:
             logger.error(f"找不到 tshark: {self.tshark_path}")
             raise
 
-    def _format_json_output(self, json_str: str, max_packets: int = 5000) -> str:
+    def _format_json_output(self, json_str: str, max_packets: int = None) -> str:
         """格式化 JSON 输出为易读形式，并限制数据包数量
-        
+
         Args:
             json_str: JSON 字符串
-            max_packets: 最大数据包数量
+            max_packets: 最大数据包数量，None时使用自动计算值
         """
+        if max_packets is None:
+            max_packets = self.auto_max_packets
         try:
             # 基础元数据
             metadata = {
@@ -224,15 +207,18 @@ class WiresharkMCP:
         except Exception:
             return "unknown"
 
-    def _run_tshark_command(self, cmd: List[str], max_packets: int = 5000) -> str:
+    def _run_tshark_command(self, cmd: List[str], max_packets: int = None) -> str:
         """运行 tshark 命令并处理输出
-        
+
         Args:
             cmd: tshark 命令参数列表
-            max_packets: 最大数据包数量
+            max_packets: 最大数据包数量，None时使用自动计算值
         """
+        if max_packets is None:
+            max_packets = self.auto_max_packets
+
         try:
-            # 统一校验 max_packets，避免异常或过大值
+            # 统一校验 max_packets
             try:
                 max_packets = self._validate_max_packets(max_packets)
             except ValueError as ve:
@@ -854,14 +840,22 @@ class WiresharkMCP:
 def create_mcp_server(wireshark: WiresharkMCP, host: str = "127.0.0.1", port: int = 3000) -> FastMCP:
     """创建 MCP 服务器实例"""
     global mcp_initialized, initialization_error
-    
+
     # 重置初始化状态
     mcp_initialized = False
     initialization_error = None
-    
+
     mcp = FastMCP(
         name="Wireshark MCP",
-        instructions="A Model Context Protocol server for Wireshark/tshark integration that provides network packet analysis capabilities.",
+        instructions=f"""A Model Context Protocol server for Wireshark/tshark integration that provides network packet analysis capabilities.
+
+自动数据包限制: {wireshark.auto_max_packets} (基于模型上下文 {wireshark.model_context_limit} tokens)
+
+使用建议：
+1. 优先使用统计工具（get_packet_statistics, io_stat, conversation_stats）了解全局趋势
+2. 使用精确过滤器和小的 max_packets（20-50）进行深度分析
+3. 避免无过滤器的全量分析
+""",
         host=host,
         port=port
     )
@@ -1576,7 +1570,7 @@ def print_banner(system_info: Dict[str, str]):
 
 def main():
     global server_instance
-    
+
     parser = argparse.ArgumentParser(description="Wireshark MCP 服务器")
     parser.add_argument("--tshark-path",
                        default="tshark",
@@ -1588,18 +1582,22 @@ def main():
                        type=int,
                        default=3000,
                        help="服务器端口")
+    parser.add_argument("--model-context-limit",
+                       type=int,
+                       default=128000,
+                       help="大模型上下文限制（tokens），用于自动调整数据包数量")
     args = parser.parse_args()
-    
+
     # 获取系统信息并打印横幅
     system_info = get_system_info()
     print_banner(system_info)
-    
+
     # 注册信号处理器
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
-    
+
     try:
-        wireshark = WiresharkMCP(args.tshark_path)
+        wireshark = WiresharkMCP(args.tshark_path, model_context_limit=args.model_context_limit)
         mcp = create_mcp_server(wireshark, host=args.host, port=args.port)
         
         # 配置中间件
@@ -1609,21 +1607,10 @@ def main():
                       allow_methods=["*"],
                       allow_headers=["*"])
         ]
-        
-        # 创建 Starlette 应用并配置路由
-        # FastMCP 的 sse_app() 返回一个完整的应用，包含 /sse 和 /messages/ 等路由
-        # 将状态和主页路由放在前面，SSE 应用放在最后作为默认处理
-        sse_app = mcp.sse_app()
-        routes = [
-            Route("/status", status_endpoint),
-            Route("/status.json", status_endpoint),  # JSON 版本
-            Route("/", homepage),  # 主页路由（优先匹配）
-            Mount("/", app=sse_app),  # SSE 应用处理所有其他路径（/sse, /messages/ 等）
-        ]
-        
+
         # 使用 lifespan 事件在应用启动后标记初始化完成
         from contextlib import asynccontextmanager
-        
+
         @asynccontextmanager
         async def lifespan(app):
             # 启动时：等待一小段时间确保服务器完全启动，然后标记初始化完成
@@ -1635,9 +1622,20 @@ def main():
             yield
             # 关闭时：清理资源
             cleanup()
-        
+
+        # 创建 SSE 应用（FastMCP 的核心应用）
+        sse_app = mcp.sse_app()
+
+        # 将自定义路由插入到 SSE 应用中（避免路由冲突）
+        # SSE 应用已经包含 /sse 和 /messages 端点
+        sse_app.routes.insert(0, Route("/status", status_endpoint))
+        sse_app.routes.insert(1, Route("/status.json", status_endpoint))
+        sse_app.routes.insert(2, Route("/", homepage))
+
+        # 创建新的 Starlette 应用，包含中间件和 lifespan
+        from starlette.applications import Starlette
         app = Starlette(
-            routes=routes,
+            routes=sse_app.routes,
             middleware=middleware,
             lifespan=lifespan
         )
@@ -1645,8 +1643,11 @@ def main():
         logger.info(f"启动 Wireshark MCP 服务器")
         logger.info(f"传输协议: sse")
         logger.info(f"服务器地址: {args.host}:{args.port}")
+        logger.info(f"模型上下文限制: {args.model_context_limit} tokens")
+        logger.info(f"自动数据包限制: {wireshark.auto_max_packets}")
         logger.info(f"状态页面: http://{args.host}:{args.port}/status")
         logger.info(f"SSE 端点: http://{args.host}:{args.port}/sse")
+        logger.info(f"消息端点: http://{args.host}:{args.port}/messages")
         logger.info(f"正在启动 SSE 服务器...")
         
         # 配置 uvicorn 服务器
